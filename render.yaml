@@ -1,0 +1,46 @@
+services:
+  # ── API Server ───────────────────────────────────────────────────────────────
+  - type: web
+    name: cold-email-os-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: node dist/index.js
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: DATABASE_URL
+        sync: false          # set manually in Render dashboard
+      - key: REDIS_URL
+        sync: false          # set manually in Render dashboard
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: APIFY_API_TOKEN
+        sync: false
+      - key: JINA_API_KEY
+        sync: false
+
+  # ── BullMQ Worker ────────────────────────────────────────────────────────────
+  - type: worker
+    name: cold-email-os-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: node dist/workers/research.worker.js
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: APIFY_API_TOKEN
+        sync: false
+      - key: JINA_API_KEY
+        sync: false
