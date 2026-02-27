@@ -29,8 +29,8 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/seed ./seed
 
-# Generate Prisma client against the installed @prisma/client
-RUN npx prisma generate
+# Copy pre-generated Prisma client from builder (avoids needing prisma CLI in prod)
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
 EXPOSE 3000
 CMD ["node", "dist/index.js"]
