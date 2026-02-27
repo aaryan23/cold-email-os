@@ -204,6 +204,10 @@ export function startResearchWorker(): Worker<ResearchJobData> {
     { connection: redis }
   );
 
+  worker.on('error', (err) => {
+    logger.error({ err }, 'Worker error');
+  });
+
   worker.on('failed', (job, err) => {
     logger.error({ jobId: job?.id, err }, 'Research job permanently failed');
   });
