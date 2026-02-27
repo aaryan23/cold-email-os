@@ -1,0 +1,142 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ───────────────────────────────────────────────────────────────────
+
+enum TenantStatus {
+  ONBOARDED
+  RESEARCH_READY
+  READY_TO_GENERATE
+  LIVE
+}
+
+// ─── TENANT ──────────────────────────────────────────────────────────────────
+
+model Tenant {
+  id                String        @id @default(uuid())
+  name              String
+  smartlead_api_key String?
+  airtable_config   Json?
+  notion_config     Json?
+  status            TenantStatus  @default(ONBOARDED)
+  created_at        DateTime      @default(now())
+  updated_at        DateTime      @updatedAt
+
+  research_reports    ResearchReport[]
+  kb_documents        KbDocument[]
+  kb_chunks           KbChunk[]
+  generations         Generation[]
+  smartlead_campaigns SmartleadCampaign[]
+
+  @@map("tenants")
+}
+
+// ─── RESEARCH ─────────────────────────────────────────────────────────────────
+
+model ResearchReport {
+  id              String   @id @default(uuid())
+  tenant_id       String
+  tenant          Tenant   @relation(fields: [tenant_id], references: [id])
+  transcript_text String
+  report_json     Json     @default("{}")
+  report_text     String   @default("")
+  is_active       Boolean  @default(false)
+  created_at      DateTime @default(now())
+
+  @@map("research_reports")
+}
+
+// ─── KNOWLEDGE BASE ───────────────────────────────────────────────────────────
+
+model KbDocument {
+  id          String     @id @default(uuid())
+  tenant_id   String?
+  tenant      Tenant?    @relation(fields: [tenant_id], references: [id])
+  title       String
+  doc_type    String     // "playbook" | "framework" | "guide" | "sequences" | "metrics" | "research"
+  source_type String     // "global_seed" | "tenant_upload"
+  created_at  DateTime   @default(now())
+
+  chunks KbChunk[]
+
+  @@map("kb_documents")
+}
+
+model KbChunk {
+  id          String     @id @default(uuid())
+  document_id String
+  document    KbDocument @relation(fields: [document_id], references: [id])
+  tenant_id   String?
+  tenant      Tenant?    @relation(fields: [tenant_id], references: [id])
+  chunk_text  String
+  // metadata shape: { vertical, offer_type, funnel_stage, tone, performance_tag }
+  metadata    Json       @default("{}")
+  created_at  DateTime   @default(now())
+
+  @@map("kb_chunks")
+}
+
+// ─── CAMPAIGN GENERATION ──────────────────────────────────────────────────────
+
+model Generation {
+  id                  String   @id @default(uuid())
+  tenant_id           String
+  tenant              Tenant   @relation(fields: [tenant_id], references: [id])
+  retrieved_chunk_ids Json     @default("[]")
+  output_json         Json     @default("{}")
+  created_at          DateTime @default(now())
+
+  @@map("generations")
+}
+
+// ─── SMARTLEAD ────────────────────────────────────────────────────────────────
+
+model SmartleadCampaign {
+  id           String   @id @default(uuid())
+  tenant_id    String
+  tenant       Tenant   @relation(fields: [tenant_id], references: [id])
+  smartlead_id String
+  name         String
+  status       String?
+  raw_data     Json?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  replies SmartleadReply[]
+  stats   SmartleadStat[]
+
+  @@unique([tenant_id, smartlead_id])
+  @@map("smartlead_campaigns")
+}
+
+model SmartleadReply {
+  id          String            @id @default(uuid())
+  campaign_id String
+  campaign    SmartleadCampaign @relation(fields: [campaign_id], references: [id])
+  lead_email  String
+  reply_type  String?
+  thread_url  String?
+  raw_data    Json?
+  created_at  DateTime          @default(now())
+
+  @@map("smartlead_replies")
+}
+
+model SmartleadStat {
+  id               String            @id @default(uuid())
+  campaign_id      String
+  campaign         SmartleadCampaign @relation(fields: [campaign_id], references: [id])
+  sent_count       Int               @default(0)
+  open_count       Int               @default(0)
+  reply_count      Int               @default(0)
+  interested_count Int               @default(0)
+  snapshot_at      DateTime          @default(now())
+
+  @@map("smartlead_stats")
+}

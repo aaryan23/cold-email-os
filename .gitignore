@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment — NEVER commit secrets
+.env
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Prisma generated client (regenerated on deploy)
+# prisma/migrations stays committed
