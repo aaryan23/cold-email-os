@@ -11,6 +11,10 @@ export const researchQueue = new Queue('research', {
   },
 });
 
+researchQueue.on('error', (err) => {
+  console.error('[Queue error]', err.message);
+});
+
 export interface ResearchJobData {
   tenantId: string;
   transcriptText: string;

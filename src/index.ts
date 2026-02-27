@@ -5,6 +5,14 @@ import redis from './lib/redis';
 import app from './app';
 import { startResearchWorker } from './workers/research.worker';
 
+// Catch anything that slips through — prevents silent exit-1 crashes
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION', reason);
+});
+
 async function main() {
   await prisma.$connect();
   logger.info('Database connected');
