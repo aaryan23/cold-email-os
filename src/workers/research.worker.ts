@@ -102,125 +102,132 @@ function flattenReportToText(report: ReportJson): string {
   return lines.join('\n');
 }
 
-const worker = new Worker<ResearchJobData>(
-  'research',
-  async (job) => {
-    const { tenantId, transcriptText, reportId, websiteUrl } = job.data;
-    logger.info({ tenantId, reportId }, 'Research job started');
+export function startResearchWorker(): Worker<ResearchJobData> {
+  const worker = new Worker<ResearchJobData>(
+    'research',
+    async (job) => {
+      const { tenantId, transcriptText, reportId, websiteUrl } = job.data;
+      logger.info({ tenantId, reportId }, 'Research job started');
 
-    // Optionally enrich transcript with website content
-    let fullContext = transcriptText;
-    if (websiteUrl) {
-      try {
-        logger.info({ tenantId, websiteUrl }, 'Fetching website content');
-        const siteContent = await fetchPageContent(websiteUrl);
-        if (siteContent && siteContent.length > 50) {
-          fullContext = `WEBSITE CONTENT (${websiteUrl}):\n${siteContent.slice(0, 8000)}\n\n---\n\nONBOARDING TRANSCRIPT:\n${transcriptText}`;
-          logger.info({ tenantId, websiteUrl }, 'Website content fetched and prepended');
+      // Optionally enrich transcript with website content
+      let fullContext = transcriptText;
+      if (websiteUrl) {
+        try {
+          logger.info({ tenantId, websiteUrl }, 'Fetching website content');
+          const siteContent = await fetchPageContent(websiteUrl);
+          if (siteContent && siteContent.length > 50) {
+            fullContext = `WEBSITE CONTENT (${websiteUrl}):\n${siteContent.slice(0, 8000)}\n\n---\n\nONBOARDING TRANSCRIPT:\n${transcriptText}`;
+            logger.info({ tenantId, websiteUrl }, 'Website content fetched and prepended');
+          }
+        } catch (err) {
+          logger.warn({ err, tenantId, websiteUrl }, 'Website fetch failed — continuing without it');
         }
-      } catch (err) {
-        logger.warn({ err, tenantId, websiteUrl }, 'Website fetch failed — continuing without it');
       }
-    }
 
-    // Step 1: Parse transcript (blocking — needed for steps 2-4)
-    let parsed: TranscriptInsights;
-    try {
-      parsed = await parseTranscript(fullContext);
-      logger.info({ tenantId, client: parsed.client_name }, 'Transcript parsed');
-    } catch (err) {
-      logger.error({ err, tenantId }, 'Transcript parsing failed');
-      throw err; // Fatal — retry the whole job
-    }
+      // Step 1: Parse transcript (blocking — needed for steps 2-4)
+      let parsed: TranscriptInsights;
+      try {
+        parsed = await parseTranscript(fullContext);
+        logger.info({ tenantId, client: parsed.client_name }, 'Transcript parsed');
+      } catch (err) {
+        logger.error({ err, tenantId }, 'Transcript parsing failed');
+        throw err; // Fatal — retry the whole job
+      }
 
-    // Steps 2-4: Run SEQUENTIALLY to avoid exceeding the 30k input-token/min rate limit.
-    // Running them in parallel causes all three Claude calls to fire simultaneously, which
-    // blows the org-level rate limit and results in 429 errors on YouTube and Reddit.
-    type Settled<T> = { status: 'fulfilled'; value: T } | { status: 'rejected'; reason: unknown };
-    async function tryStep<T>(fn: () => Promise<T>): Promise<Settled<T>> {
-      try { return { status: 'fulfilled', value: await fn() }; }
-      catch (reason) { return { status: 'rejected', reason }; }
-    }
+      // Steps 2-4: Run SEQUENTIALLY to avoid exceeding the 30k input-token/min rate limit.
+      // Running them in parallel causes all three Claude calls to fire simultaneously, which
+      // blows the org-level rate limit and results in 429 errors on YouTube and Reddit.
+      type Settled<T> = { status: 'fulfilled'; value: T } | { status: 'rejected'; reason: unknown };
+      async function tryStep<T>(fn: () => Promise<T>): Promise<Settled<T>> {
+        try { return { status: 'fulfilled', value: await fn() }; }
+        catch (reason) { return { status: 'rejected', reason }; }
+      }
 
-    const youtubeResult    = await tryStep(() => runYouTubeResearch(parsed));
-    const redditResult     = await tryStep(() => runRedditResearch(parsed));
-    const competitorResult = await tryStep(() => runCompetitorResearch(parsed));
+      const youtubeResult    = await tryStep(() => runYouTubeResearch(parsed));
+      const redditResult     = await tryStep(() => runRedditResearch(parsed));
+      const competitorResult = await tryStep(() => runCompetitorResearch(parsed));
 
-    if (youtubeResult.status === 'rejected') {
-      logger.warn({ err: youtubeResult.reason }, 'YouTube research failed — continuing');
-    }
-    if (redditResult.status === 'rejected') {
-      logger.warn({ err: redditResult.reason }, 'Reddit research failed — continuing');
-    }
-    if (competitorResult.status === 'rejected') {
-      logger.warn({ err: competitorResult.reason }, 'Competitor research failed — continuing');
-    }
+      if (youtubeResult.status === 'rejected') {
+        logger.warn({ err: youtubeResult.reason }, 'YouTube research failed — continuing');
+      }
+      if (redditResult.status === 'rejected') {
+        logger.warn({ err: redditResult.reason }, 'Reddit research failed — continuing');
+      }
+      if (competitorResult.status === 'rejected') {
+        logger.warn({ err: competitorResult.reason }, 'Competitor research failed — continuing');
+      }
 
-    // Extract insights + raw data
-    const youtubeInsights = youtubeResult.status === 'fulfilled' ? youtubeResult.value.insights : null;
-    const rawVideos: YouTubeVideo[] = youtubeResult.status === 'fulfilled' ? youtubeResult.value.rawVideos : [];
-    const redditInsights = redditResult.status === 'fulfilled' ? redditResult.value.insights : null;
-    const rawPosts: RedditPost[] = redditResult.status === 'fulfilled' ? redditResult.value.rawPosts : [];
+      // Extract insights + raw data
+      const youtubeInsights = youtubeResult.status === 'fulfilled' ? youtubeResult.value.insights : null;
+      const rawVideos: YouTubeVideo[] = youtubeResult.status === 'fulfilled' ? youtubeResult.value.rawVideos : [];
+      const redditInsights = redditResult.status === 'fulfilled' ? redditResult.value.insights : null;
+      const rawPosts: RedditPost[] = redditResult.status === 'fulfilled' ? redditResult.value.rawPosts : [];
 
-    // Step 5: CustomerDNA — deep psychographic analysis using raw scraped data
-    let customerDna: CustomerDnaReport | null = null;
-    try {
-      logger.info({ tenantId }, 'CustomerDNA analysis started');
-      customerDna = await runCustomerDnaResearch(parsed, rawPosts, rawVideos);
-      logger.info({ tenantId }, 'CustomerDNA analysis complete');
-    } catch (err) {
-      logger.warn({ err, tenantId }, 'CustomerDNA analysis failed — continuing without it');
-    }
+      // Step 5: CustomerDNA — deep psychographic analysis using raw scraped data
+      let customerDna: CustomerDnaReport | null = null;
+      try {
+        logger.info({ tenantId }, 'CustomerDNA analysis started');
+        customerDna = await runCustomerDnaResearch(parsed, rawPosts, rawVideos);
+        logger.info({ tenantId }, 'CustomerDNA analysis complete');
+      } catch (err) {
+        logger.warn({ err, tenantId }, 'CustomerDNA analysis failed — continuing without it');
+      }
 
-    const report_json: ReportJson = {
-      ...parsed,
-      youtube_insights: youtubeInsights,
-      reddit_segments:  redditInsights,
-      competitor_analysis: competitorResult.status === 'fulfilled' ? competitorResult.value : null,
-      customer_dna: customerDna,
-    };
+      const report_json: ReportJson = {
+        ...parsed,
+        youtube_insights: youtubeInsights,
+        reddit_segments:  redditInsights,
+        competitor_analysis: competitorResult.status === 'fulfilled' ? competitorResult.value : null,
+        customer_dna: customerDna,
+      };
 
-    const report_text = flattenReportToText(report_json);
+      const report_text = flattenReportToText(report_json);
 
-    // Atomic update: deactivate old reports + activate new one + advance tenant status
-    await prisma.$transaction([
-      prisma.researchReport.updateMany({
-        where: { tenant_id: tenantId, is_active: true },
-        data: { is_active: false },
-      }),
-      prisma.researchReport.update({
-        where: { id: reportId },
-        data: { report_json: report_json as object, report_text, is_active: true },
-      }),
-      prisma.tenant.update({
-        where: { id: tenantId },
-        data: { status: 'RESEARCH_READY' },
-      }),
-    ]);
+      // Atomic update: deactivate old reports + activate new one + advance tenant status
+      await prisma.$transaction([
+        prisma.researchReport.updateMany({
+          where: { tenant_id: tenantId, is_active: true },
+          data: { is_active: false },
+        }),
+        prisma.researchReport.update({
+          where: { id: reportId },
+          data: { report_json: report_json as object, report_text, is_active: true },
+        }),
+        prisma.tenant.update({
+          where: { id: tenantId },
+          data: { status: 'RESEARCH_READY' },
+        }),
+      ]);
 
-    logger.info({ tenantId, reportId }, 'Research pipeline complete');
-  },
-  { connection: redis }
-);
+      logger.info({ tenantId, reportId }, 'Research pipeline complete');
+    },
+    { connection: redis }
+  );
 
-worker.on('failed', (job, err) => {
-  logger.error({ jobId: job?.id, err }, 'Research job permanently failed');
-});
+  worker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, err }, 'Research job permanently failed');
+  });
 
-worker.on('completed', (job) => {
-  logger.info({ jobId: job.id }, 'Research job completed successfully');
-});
+  worker.on('completed', (job) => {
+    logger.info({ jobId: job.id }, 'Research job completed successfully');
+  });
 
-// Graceful shutdown
-const shutdown = async (signal: string) => {
-  logger.info({ signal }, 'Worker shutting down...');
-  await worker.close();
-  await prisma.$disconnect();
-  await redis.quit();
-  process.exit(0);
-};
+  logger.info('Research worker started');
+  return worker;
+}
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+// Standalone mode: node dist/workers/research.worker.js
+if (require.main === module) {
+  const worker = startResearchWorker();
 
-logger.info('Research worker started');
+  const shutdown = async (signal: string) => {
+    logger.info({ signal }, 'Worker shutting down...');
+    await worker.close();
+    await prisma.$disconnect();
+    await redis.quit();
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
